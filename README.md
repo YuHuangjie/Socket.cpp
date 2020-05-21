@@ -6,65 +6,121 @@ Can also be combined with lists and threads to run multiple socket connections a
 In this example the server accepts only one client.
 But if you store the sockets and iterate through them (or split them with threads in multiple processes) you can accept multiple clients.
 ```cpp
-string ip = "localhost";
-string port = "1234";
-Socket *masterSocket = new Socket(AF_INET,SOCK_STREAM,0); //AF_INET (Internet mode) SOCK_STREAM (TCP mode) 0 (Protocol any)
-int optVal = 1;
-masterSocket->socket_set_opt(SOL_SOCKET, SO_REUSEADDR, &optVal); //You can reuse the address and the port
-masterSocket->bind(ip, port); //Bind socket on localhost:1234
+socket_in server;
+socket_in *peer;
+int reuse = 1;
+string ip, serv;
+const size_t sz = 13;
+char buf[sz];
+int res;
 
-masterSocket->listen(10); //Start listening for incoming connections (10 => maximum of 10 Connections in Queue)
+/*
+ * Establish connection
+ */
+if (server.set_opt(SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0)
+        goto server_err;
+if (server.bind("127.0.0.1", 23333) < 0)
+        goto server_err;
+if (server.getnameinfo(ip, serv) < 0)
+        goto server_err;
+cout << "server: " << ip << ": " << serv << endl;
+if (server.listen(1) < 0) 
+        goto server_err;
+peer = server.accept();
+if (!peer)
+        goto server_err;
+if (peer->getnameinfo(ip, serv) < 0)
+        goto peer_err;
+cout << "accept peer: " << ip << ": " << serv << endl;
+
+/* 
+ * Exchange data
+ */
+if (peer->read(buf, sz) < 0)
+        goto peer_err;
+cout << "read without timer: " << buf << endl;
+buf[0] = '\0';
 
 while (true) {
-    vector<Socket> reads(1);
-    reads[0] = *masterSocket;
-    int seconds = 10; //Wait 10 seconds for incoming Connections
-    if(Socket::select(&reads, NULL, NULL, seconds) < 1){ //Socket::select waits until masterSocket reveives some input (for example a new connection)
-        //No new Connection
-        continue;
-    }else{
-        //Something happens, let's accept the connection
-        break;
-    }
+        res = peer->read(buf, sz, 2);
+        if (res == SOCKERR_NODATA) {
+                cout << "no data available in 2 seconds" << endl;
+        }
+        else if (res == SOCKERR_PEER_CLOSED || res < 0) {
+                goto peer_err;
+        }
+        else {
+                cout << "read with timer: " << buf << endl;
+                break;
+        }
 }
-Socket *newSocket = masterSocket->accept(); //Accept the incoming connection and creates a new Socket to the client
 
+peer->set_blocking(false);
 while (true) {
-    vector<Socket> reads(1);
-    reads[0] = *newSocket;
-    int seconds = 10; //Wait 10 seconds for input
-    if(Socket::select(&reads, NULL, NULL, seconds) < 1){ //Socket::select waits until masterSocket reveives some input (for example a message)
-        //No Input
-        continue;
-    }else{
-        string buffer;
-        newSocket->socket_read(buffer, 1024); //Read 1024 bytes of the stream
-        
-        newSocket->socket_write(buffer); //Sends the input back to the client (echo)
-    }
+        res = peer->read(buf, sz);
+        if (res == SOCKERR_NODATA)
+                cout << "no data available in nonblocking mode" << endl;
+        else if (res == SOCKERR_PEER_CLOSED || res < 0) 
+                goto peer_err;
+        else 
+                cout << "read without timer: " << buf << endl;
 }
-newSocket->socket_shutdown(2);
-newSocket->close();
 
-masterSocket->socket_shutdown(2);
-masterSocket->close();
+/* 
+ * Release socket descriptors
+ */
+peer->close();
+server.close();
+return 0;
+
+peer_err:
+        cerr << peer->get_last_error() << endl;
+        peer->close();
+        server.close();
+        return 1;
+server_err:
+        cerr << server.get_last_error() << endl;
+        server.close();
+        if (peer)
+                peer->close();
+        return 1;
 ```
 
 **Simple Socket Client**
 ```cpp
-string ip = Socket::ipFromHostName("google.com"); //Get ip addres from hostname
-string port = "80"; //let's talk on http port
-Socket *sock = new Socket(AF_INET,SOCK_STREAM,0);  //AF_INET (Internet mode) SOCK_STREAM (TCP mode) 0 (Protocol any)
-sock->connect(ip, port); //Connect to google.com:80
-sock->socket_write("GET / HTTP/1.1\r\n\r\n");//Send GET request to google.com:80
-int seconds = 10;//Wait 10 second for response
-vector<Socket> reads(1);
-reads[0] = *sock;
-if(sock->select(&reads, NULL, NULL, seconds) < 1){//Socket::select waits until sock reveives some input (for example the answer from google.com)
-    //Something went wrong
-}else{
-    string buffer;
-    sock->socket_read(buffer, 1024);//Read 1024 bytes of the answer
-    cout << buffer << endl;
-}
+socket_in client;
+string ip, service;
+const size_t sz = 13;
+char msg[sz] = "Hello, there";
+
+/*
+ * Establish connection
+ */
+if (client.connect("127.0.0.1", 23333) < 0) 
+        goto client_err;
+if (client.getnameinfo(ip, service) < 0)
+        goto client_err;
+cout << "server: " << ip << ": " << service << endl;
+
+/* 
+ * Exchange data
+ */
+client.write(msg, sz);
+
+this_thread::sleep_for(chrono::seconds(5));
+client.write(msg, sz);
+
+this_thread::sleep_for(chrono::seconds(2));
+client.write(msg, sz);
+
+/* 
+ * Release socket descriptors
+ */
+client.close();
+
+return 0;
+
+client_err:
+        cerr << client.get_last_error() << endl;
+        return 1;
 ```
